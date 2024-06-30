@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torchvision import datasets
@@ -15,7 +16,7 @@ from tqdm import tqdm
 
 ## Helper Functions
 def MSE(x, x_hat):
-    mse_val = torch.sum((x - x_hat)**2)
+    mse_val = torch.mean((x - x_hat)**2)
     return mse_val 
 
 # Rate Loss, Assumes a Normal Distribution (PMF)
@@ -25,11 +26,14 @@ def rate_loss_fun(y, mu=0, sigma=5):
 
     return filesize_in_bits
 
-def get_likelihood(y, mu, sigma):
+def get_likelihood(y, mu, sigma, eps=1e-7):
     y_noisy = y + (torch.randn_like(y) - 0.50)  # add uniform noise between [-0.5, 0.50]
     
     normal_dist = torch.distributions.normal.Normal(mu, sigma)
     likelihood = normal_dist.cdf(y_noisy + 0.50) - normal_dist.cdf(y_noisy - 0.50)
+    
+    # probability is not allowed to be zero
+    likelihood = F.threshold(likelihood, eps, eps)
 
     return likelihood
 
@@ -110,7 +114,7 @@ training_data = TrainImageDataset(img_dir=dataset_train_path,
                                   transform=my_transforms_training)
 
 validation_data = ValidImageDataset(img_dir=dataset_validation_path,
-                                    img_divisible_by = 4,
+                                    img_divisible_by = 16,
                                     transform=my_transforms_validation)
 
 
@@ -145,6 +149,37 @@ class Encoder(nn.Module):
         y      = 32.0 * layer6                  # brings data from [-1,+1] to [-32, +32]
 
         return y
+
+class HyperEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels=12,  out_channels=128, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=2, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=2, padding=1)
+        self.conv5 = nn.Conv2d(in_channels=512, out_channels=512, kernel_size=5, stride=1, padding=2)
+        self.conv6 = nn.Conv2d(in_channels=512, out_channels=12,  kernel_size=5, stride=1, padding=2)
+        
+        self.act1 = nn.ReLU(inplace=False)
+        self.act2 = nn.ReLU(inplace=False)
+        self.act3 = nn.ReLU(inplace=False)
+        self.act4 = nn.ReLU(inplace=False)
+        self.act5 = nn.ReLU(inplace=False)
+        self.act6 = nn.Tanh()  
+
+    def forward(self, x):
+        layer1 = self.act1(self.conv1(x))       # [B,   3, 64, 64] --> [B, 128, 64, 64]
+
+        layer2 = self.act2(self.conv2(layer1))  # [B, 128, 64, 64] --> [B, 256, 32, 32], downsample!
+        layer3 = self.act3(self.conv3(layer2))  # [B, 256, 32, 32] --> [B, 256, 32, 32]
+
+        layer4 = self.act4(self.conv4(layer3))  # [B, 256, 32, 32] --> [B, 512, 16, 16], downsample!
+        layer5 = self.act5(self.conv5(layer4))  # [B, 512, 16, 16] --> [B, 512, 16, 16]
+
+        layer6 = self.act6(self.conv6(layer5))  # [B, 512, 16, 16] --> [B,  12, 16, 16]
+        z      = 16.0 * layer6                  # brings data from [-1,+1] to [-16, +16]
+
+        return z
 
 class Decoder(nn.Module):
     def __init__(self):
@@ -182,6 +217,40 @@ class Decoder(nn.Module):
 
         return x_hat
 
+class HyperDecoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels=12,  out_channels=512, kernel_size=5, stride=1, padding=2)
+        self.conv2 = nn.Conv2d(in_channels=512, out_channels=512, kernel_size=5, stride=1, padding=2)
+
+        self.conv3 = nn.ConvTranspose2d(in_channels=512, out_channels=256, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.conv4 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1)
+
+        self.conv5 = nn.ConvTranspose2d(in_channels=256, out_channels=128, kernel_size=3, stride=2, padding=1, output_padding=1)
+        self.conv6 = nn.Conv2d(in_channels=128, out_channels=128,  kernel_size=3, stride=1, padding=1)
+
+        self.conv7 = nn.Conv2d(in_channels=128, out_channels=2*12, kernel_size=3, stride=1, padding=1)
+        
+        self.act1 = nn.ReLU(inplace=False)
+        self.act2 = nn.ReLU(inplace=False)
+        self.act3 = nn.ReLU(inplace=False)
+        self.act4 = nn.ReLU(inplace=False)
+        self.act5 = nn.ReLU(inplace=False)
+        self.act6 = nn.ReLU(inplace=False)
+
+    def forward(self, z):
+        layer1 = self.act1(self.conv1(z))       # [B,  12, 16, 16] --> [B, 512, 16, 16]
+        layer2 = self.act2(self.conv2(layer1))  # [B, 512, 16, 16] --> [B, 512, 16, 16]
+
+        layer3 = self.act3(self.conv3(layer2))  # [B, 512, 16, 16] --> [B, 256, 32, 32], upsample
+        layer4 = self.act4(self.conv4(layer3))  # [B, 256, 32, 32] --> [B, 256, 32, 32]
+
+        layer5 = self.act5(self.conv5(layer4))  # [B, 256, 32, 32] --> [B, 128, 64, 64]
+        layer6 = self.act6(self.conv6(layer5))  # [B, 128, 64, 64] --> [B, 128, 64, 64]
+        layer7 = self.conv7(layer6)             # [B, 128, 64, 64] --> [B,  24, 64, 64]
+        y_para = layer7
+
+        return y_para
 
 ## Define Everything
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -213,9 +282,12 @@ valid_dataloader = DataLoader(validation_data, **valid_kwargs)
 learning_rate = 1e-4
 
 compression_encoder = Encoder().to(device)
+compression_hyper_encoder = HyperEncoder().to(device)
 compression_decoder = Decoder().to(device)
+compression_hyper_decoder = HyperDecoder().to(device)
 
-optim = torch.optim.Adam([*compression_encoder.parameters(), *compression_decoder.parameters()],
+optim = torch.optim.Adam([*compression_encoder.parameters(), *compression_decoder.parameters(),
+                          *compression_hyper_encoder.parameters(), *compression_hyper_decoder.parameters()],
                           lr=learning_rate)
 
 ## WandB Tracking Initialization
@@ -229,7 +301,7 @@ wandb.init(
         "learning_rate": 0.0001,
         "architecture": "AI Image Compression AutoEncoder",
         "dataset": "CLIC_2021",
-        "epochs": 20,
+        "epochs": 2_000,
         })
 wandb.define_metric("*", step_metric="global_step")
 
@@ -238,22 +310,45 @@ wandb.define_metric("*", step_metric="global_step")
 def run_validation(valid_dataloader, global_step):
     val_counter = 0.0
     avg_distortion = 0.0
-    avg_rate = 0.0
+    avg_bpp_total = 0.0
+    avg_bpp_y = 0.0
+    avg_bpp_z = 0.0
     avg_loss = 0.0
 
     for val_loop_counter, input_img in enumerate(tqdm(valid_dataloader)):
         with torch.no_grad():
-            x = input_img.to(device)                     # [B,  3,     H,    W]
-            y = compression_encoder(x)                   # [B, 12,  H//4, W//4]
-            y_hat = integer_quantization_class.apply(y)  # quantize to integer; custom straight-through gradient
-            x_hat = compression_decoder(y_hat)           # [B,  3,     H,    W]
+            x = input_img.to(device)                      # [B,  3,     H,     W]
+            y = compression_encoder(x)                    # [B, 12,  H//4,  W//4]
+            z = compression_hyper_encoder(y)              # [B, 12, H//16, W//16]
+
+            z_hat  = integer_quantization_class.apply(z)  # quantize to integer; custom straight-through gradient
+            y_para = compression_hyper_decoder(z_hat)     # [B, 24,  H//4,  W//4]
+            y_mu = y_para[:,0:12]                         # [B, 12,  H//4,  W//4]
+            y_sigma = 0.01 + torch.abs(y_para[:,12:24])   # [B, 12,  H//4,  W//4]; NO NEGATIVE SIGMA
+
+            # Create y_hat, quantize only the residual after the mu prediction
+            y_res = y - y_mu
+            y_res_hat = integer_quantization_class.apply(y_res) # quantize to integer; custom straight-through gradient
+            y_hat = y_res_hat + y_mu
+
+            x_hat = compression_decoder(y_hat)            # [B, 3, H, W]
             
             distortion_loss = MSE(x, x_hat)
-            rate_loss = rate_loss_fun(y)
-            loss = distortion_loss + 0.1 * rate_loss
-            
+
+            rate_loss_y = rate_loss_fun(y, y_mu, y_sigma)
+            bpp_y = rate_loss_y / (1.0*x.shape[2]*x.shape[3])
+
+            rate_loss_z = rate_loss_fun(z)
+            bpp_z = rate_loss_z / (1.0*x.shape[2]*x.shape[3])
+
+            bpp_total = bpp_y + bpp_z
+
+            loss = 500.0*distortion_loss + bpp_total
+
             avg_distortion += distortion_loss
-            avg_rate += rate_loss
+            avg_bpp_total += bpp_total
+            avg_bpp_y += rate_loss_y
+            avg_bpp_z += rate_loss_z
             avg_loss += loss
             val_counter +=1
             
@@ -266,44 +361,97 @@ def run_validation(valid_dataloader, global_step):
     
     # Log aggrregated validation metrics:
     avg_distortion = avg_distortion / val_counter
-    avg_rate = avg_rate / val_counter
+    avg_bpp_total = avg_bpp_total / val_counter
+    avg_bpp_y = avg_bpp_y / val_counter
+    avg_bpp_z = avg_bpp_z / val_counter
     avg_loss = avg_loss / val_counter
     wandb.log({"global_step": global_step, "valid/MSE": 255.0*255.0*avg_distortion}) # multiplier from [0,1] to [0,255]
-    wandb.log({"global_step": global_step, "valid/avg_rate": avg_rate}) 
+    wandb.log({"global_step": global_step, "valid/avg_bpp_total": avg_bpp_total}) 
+    wandb.log({"global_step": global_step, "valid/avg_bpp_y": avg_bpp_y}) 
+    wandb.log({"global_step": global_step, "valid/avg_bpp_z": avg_bpp_z}) 
     wandb.log({"global_step": global_step, "valid/loss": avg_loss})
 
 
 ## Training Loop
 counter = 0
-for epoch in range(0, 2_000):
+epoch = 0
+max_epochs = 2_000
+
+## OPTIONAL, LOAD MODEL
+load_model = False
+load_path = "saved_models/compression_model_0.pt"    
+if(load_model):
+    checkpoint = torch.load(load_path)
+    compression_encoder.load_state_dict(checkpoint['compression_encoder_state_dict'])
+    compression_hyper_encoder.load_state_dict(checkpoint['compression_hyper_encoder_state_dict'])
+    compression_decoder.load_state_dict(checkpoint['compression_decoder_state_dict'])
+    compression_hyper_decoder.load_state_dict(checkpoint['compression_hyper_decoder_state_dict'])
+    optim.load_state_dict(checkpoint['optimizer_state_dict'])
+    counter = checkpoint['counter']
+    epoch = checkpoint['epoch']
+    print("\n\nModel loaded, Path: ", load_path, "\n\n")
+
+while epoch < max_epochs:
     for input_img in tqdm(train_dataloader):
         optim.zero_grad()
 
-        x = input_img.to(device)                     # [B,  3, 256, 256]
-        y = compression_encoder(x)                   # [B, 12,  64,  64]
-        y_hat = integer_quantization_class.apply(y)  # quantize to integer; custom straight-through gradient
+        x = input_img.to(device)                      # [B,  3, 256, 256]
+        y = compression_encoder(x)                    # [B, 12,  64,  64]
+        z = compression_hyper_encoder(y)              # [B, 12,  16,  16]
+
+        z_hat  = integer_quantization_class.apply(z)  # quantize to integer; custom straight-through gradient
+        y_para = compression_hyper_decoder(z_hat)      # [B, 24,  64,  64]
+        y_mu = y_para[:,0:12]                         # [B, 12,  64,  64]
+        y_sigma = 0.01 + torch.abs(y_para[:,12:24])   # [B, 12,  64,  64]; NO NEGATIVE SIGMA
+
+        # Create y_hat, quantize only the residual after the mu prediction
+        y_res = y - y_mu
+        y_res_hat = integer_quantization_class.apply(y_res) # quantize to integer; custom straight-through gradient
+        y_hat = y_res_hat + y_mu
+
         x_hat = compression_decoder(y_hat)           # [B,  3, 256, 256]
 
+        # Losses
         distortion_loss = MSE(x, x_hat)
-        rate_loss = rate_loss_fun(y)
 
-        loss = 0.05 * distortion_loss + rate_loss
+        rate_loss_y = rate_loss_fun(y, y_mu, y_sigma)
+        bpp_y = rate_loss_y / (1.0*x.shape[2]*x.shape[3])
+
+        rate_loss_z = rate_loss_fun(z)
+        bpp_z = rate_loss_z / (1.0*x.shape[2]*x.shape[3])
+
+        bpp_total = bpp_y + bpp_z
+
+        loss = 500.0*distortion_loss + bpp_total
         loss.backward()
         optim.step()
 
         ## Run Validation, does not run at start
         if ((counter+1)%10_000) == 0:
             run_validation(valid_dataloader, counter)
-        
+
+        ## Save Model
+        if ((counter+1)%100_000) == 0:
+            torch.save({'compression_encoder_state_dict': compression_encoder.state_dict(),
+                        'compression_hyper_encoder_state_dict': compression_hyper_encoder.state_dict(),
+                        'compression_decoder_state_dict': compression_decoder.state_dict(),
+                        'compression_hyper_decoder_state_dict': compression_hyper_decoder.state_dict(),
+                        'optimizer_state_dict': optim.state_dict(),
+                        'counter': counter,
+                        'epoch': epoch,
+                       }, f"saved_models/compression_model_{counter}.pt")
+
         ## Logging Functionality
-        if (counter%10) == 0:
+        if (counter%50) == 0:
             # log metrics to wandb
             wandb.log({"global_step": counter, "train/MSE": 255.0*255.0*distortion_loss}) # multiplier from [0,1] to [0,255]
-            wandb.log({"global_step": counter, "train/rate_loss": rate_loss})
+            wandb.log({"global_step": counter, "train/bpp_y": bpp_y})
+            wandb.log({"global_step": counter, "train/bpp_z": bpp_z})
+            wandb.log({"global_step": counter, "train/bpp_total": bpp_total})
             wandb.log({"global_step": counter, "train/loss": loss})
             
             # images are too large, track every 50th step
-            if (counter%50) == 0:
+            if (counter%500) == 0:
                 x_and_xhat = torch.cat((x, x_hat), dim=3).permute(0,2,3,1)  # [B,C,H,W] -> [B,H,W,C]
                 x_and_xhat = x_and_xhat[0,:]                                # [B,H,W,C] -> [H,W,C]
                 x_and_xhat = x_and_xhat.cpu().detach().numpy()              # send to cpu & numpy
@@ -311,4 +459,5 @@ for epoch in range(0, 2_000):
                 wandb.log({"global_step": counter, "train/images": image})
         
         counter += 1
+    epoch += 1
 
