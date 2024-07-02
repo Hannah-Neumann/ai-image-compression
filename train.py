@@ -350,8 +350,8 @@ def main():
 
                 avg_distortion += distortion_loss
                 avg_bpp_total += bpp_total
-                avg_bpp_y += rate_loss_y
-                avg_bpp_z += rate_loss_z
+                avg_bpp_y += bpp_y
+                avg_bpp_z += bpp_z
                 avg_loss += loss
                 val_counter +=1
                 
@@ -384,7 +384,7 @@ def main():
 
     ## OPTIONAL, LOAD MODEL
     load_model = False
-    load_path = "saved_models/compression_model_0.pt"    
+    load_path = "saved_models/compression_model_2000000.pt"    
 
     if(load_model):
         checkpoint = torch.load(load_path)
@@ -399,6 +399,15 @@ def main():
 
     while epoch < max_epochs:
         for input_img in tqdm(train_dataloader):
+
+            # Reduce the learning rate in the later stages of training:
+            if counter == 1_500_000:
+                for g in optim.param_groups:
+                    g['lr'] = 0.10*learning_rate
+            if counter == 1_800_000:
+                for g in optim.param_groups:
+                    g['lr'] = 0.01*learning_rate
+
             optim.zero_grad(set_to_none=True)
 
             x = input_img.to(device)                      # [B,  3, 256, 256]
