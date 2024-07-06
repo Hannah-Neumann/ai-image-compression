@@ -2,20 +2,26 @@
 # AI Image Compression
 
 ## Introduction
-This project implements the AI Image Compression pipeline as described in the papers "Joint autoregressive and hierarchical priors for learned image compression" (Ballé, 2018) and "Variational image compression with a scale hyperprior" (Ballé, 2018). The implementation aims to explore advanced image compression techniques using deep learning, as these papers are considered foundational work in the field.
+As a Product Manager at Deep Render, I initiated this AI Image Compression project to enhance my understanding of the technical and engineering principles behind lossy image compression using neural networks. **Note:** This project is independent and was developed during my personal time, not affiliated with Deep Render.
 
-As a product manager at Deep Render, I undertook this project to deepen my understanding of the technical and engineering aspects of image compression technologies. **Note**: This project is not affiliated with Deep Render and was conducted during my personal time.
+The project is based on pioneering techniques detailed in "Joint Autoregressive and Hierarchical Priors for Learned Image Compression" and "Variational Image Compression with a Scale Hyperprior" by Ballé in 2018. These papers are recognized as foundational work in leveraging deep learning for advanced image compression methodologies. The core challenge in lossy image compression lies in balancing image quality (measured by distortion) against file size (measured by the rate).
 
 ## Results & Findings
-The model was trained for 2 million iterations and the performance was tracked using Weights & Biases (Wandb). Here are the results obtained on the CLIC2021 validation dataset:
+The model was rigorously trained over 2 million iterations, utilizing an NVIDIA RTX 4090 GPU. The training process spanned approximately 48 hours, with performance evaluations continuously monitored and logged using Weights & Biases (Wandb). The training and validation phases were conducted on the CLIC2021 dataset, which is a standard benchmark in image compression research.
 
-- **Mean Squared Error (MSE):** 
-- **Bits Per Pixel (bpp):** 
+Key performance metrics from the CLIC2021 validation dataset are as follows:
+- **Mean Squared Error (MSE):** 16.52, indicating the average squared difference between the original and compressed images. A lower MSE is better,
+- **Bits Per Pixel (bpp):** 1.83, reflecting the average number of bits used for encoding each pixel in the image. A lower bpp is better,
+- **Implied Compression Ratio:** 13.12 : 1.00, suggesting that the compression algorithm reduces the file size by over 13 times on average, without significant loss of quality.
+
+These metrics indicate superior performance compared to standard JPEG and WebP compression techniques, showcasing the potential of advanced neural networks in image compression.
+
+Below are the training curves that detail the progression of **MSE** (the distortion loss) and **bpp** (the rate loss) throughout the training process:
 
 ![image_mse](images/Validation-2.png)
 ![image_bpp](images/Validation-3.png)
 
-These results demonstrate improvements over traditional JPEG image compression techniques. Below are some visualizations from the training and validation phases as tracked on Wandb:
+The below images illustrate the practical effects of the compression algorithm compared to standard methods, providing a visual confirmation of the numerical results:
 
 ![image_picture_comparison_train](images/Train-4.png)
 ![image_picture_comparison_valid](images/Validation-4.png)
